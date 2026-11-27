@@ -19,6 +19,11 @@ const phoneInput = z.object({ phone })
 const loginInput = phoneInput.extend({ password: z.string().min(1).max(72).refine((value) => Buffer.byteLength(value) <= 72) })
 const emailInput = z.object({ email: memberEmail })
 const codeInput = emailInput.extend({ code: z.string().regex(/^\d{6}$/) })
+const setupToken = z.string().regex(/^[0-9a-f]{64}$/i)
+const bootstrapInput = phoneInput.extend({
+  token: setupToken,
+  password: z.string().min(12).max(72).refine((value) => Buffer.byteLength(value) <= 72),
+})
 const invalidInput = 'Check the phone number and password and try again.'
 const invalidCode = 'The code is invalid or expired. Request a new code and try again.'
 const sent = 'If this address is registered for an active membership, you’ll get a sign-in code. Check your inbox and spam folder.'
@@ -248,6 +253,60 @@ export function createAuth(
     if (!result) { response.status(400).json({ error: invalidCode }); return }
     await sendSession(response, result, result.user)
   }
+
+  async function hasAdmin(client: Prisma.TransactionClient | PrismaClient) {
+    return Boolean(await client.user.findFirst({ where: { role: 'ADMIN' }, select: { id: true } }))
+  }
+
+  router.get('/admin/setup', limit(30), async (_request, response) => {
+    const status = await hasAdmin(database) ? 'closed'
+      : setupToken.safeParse(process.env.ADMIN_SETUP_TOKEN).success ? 'available' : 'unconfigured'
+    response.json({ status })
+  })
+
+  router.post('/admin/setup', limit(5), async (request, response) => {
+    const configured = setupToken.safeParse(process.env.ADMIN_SETUP_TOKEN)
+    if (!configured.success) { response.status(503).json({ error: 'Admin setup is not configured.' }); return }
+    const input = bootstrapInput.safeParse(request.body)
+    if (!input.success) {
+      response.status(400).json({ error: 'Check your phone number, setup token and password length (12 characters to 72 bytes).' })
+      return
+    }
+    const provided = Buffer.from(input.data.token, 'hex')
+    const expected = Buffer.from(configured.data, 'hex')
+    if (!timingSafeEqual(provided, expected)) {
+      response.status(403).json({ error: 'The setup token is incorrect.' })
+      return
+    }
+    if (await hasAdmin(database)) {
+      response.status(409).json({ error: 'An admin account already exists. First admin setup is closed.' })
+      return
+    }
+
+    const passwordHash = await bcrypt.hash(input.data.password, 12)
+    try {
+      const created = await database.$transaction(async (transaction) => {
+        // Recheck in a serializable transaction so simultaneous requests cannot both create the first admin.
+        if (await hasAdmin(transaction)) return false
+        const admin = await transaction.user.create({
+          data: { phone: input.data.phone, role: 'ADMIN', passwordHash, accountActivatedAt: new Date() },
+          select: { id: true },
+        })
+        await transaction.auditLog.create({
+          data: { actorId: admin.id, action: 'ADMIN_BOOTSTRAPPED', entityType: 'User', entityId: admin.id },
+        })
+        return true
+      }, { isolationLevel: 'Serializable' })
+      if (created) { response.status(201).json({ message: 'Admin account created. You can now sign in.' }); return }
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') {
+        response.status(409).json({ error: 'That mobile number is already assigned to an account.' })
+        return
+      }
+      if (!(error instanceof Prisma.PrismaClientKnownRequestError) || error.code !== 'P2034') throw error
+    }
+    response.status(409).json({ error: 'Admin setup was completed or changed. Refresh the setup page.' })
+  })
 
   router.post('/admin/login', limit(15), limitSignInByPhone, adminLogin)
   router.post('/member/code/request', limit(10), requestCode())

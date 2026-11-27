@@ -81,7 +81,7 @@ app.use('/api', (_request, response) => {
 
 if (process.env.VERCEL !== '1') {
   app.use(express.static(webDirectory))
-  app.get(['/member/login', '/admin/login', '/member/setup', '/member/reset'], (_request, response) => {
+  app.get(['/member/login', '/admin/login', '/admin/setup', '/member/setup', '/member/reset'], (_request, response) => {
     response.sendFile('index.html', { root: webDirectory })
   })
 }

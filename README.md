@@ -91,3 +91,9 @@ Import this repository as a Vercel Express project using the repository root. Se
 - Set `RESEND_API_KEY` as a sensitive production variable and set `RESEND_FROM_EMAIL` to a sender address on your verified Resend domain.
 
 The Vercel build applies checked-in migrations and serves the React site with the Express API on the same origin. The protected Vercel cron runs daily at 03:30 UTC (09:00 IST). `/api/health` checks the web process, and `/api/ready` checks PostgreSQL and the migrated schema. Provision the first admin with `npm run auth:create-admin --workspace api` using the direct Neon connection and temporary admin settings. Keep demo seeds for local development.
+
+### Create the first admin in the browser
+
+Generate a private setup token with `node -p "require('node:crypto').randomBytes(32).toString('hex')"`.
+Add the result as a sensitive `ADMIN_SETUP_TOKEN` variable in Vercel Production and redeploy the current release.
+Open `/admin/setup`, enter the token and the mobile number and password you want to use for admin sign-in. The setup route closes after the first admin is created. Remove the environment variable and redeploy after setup.

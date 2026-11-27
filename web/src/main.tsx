@@ -2,6 +2,7 @@ import { StrictMode, useEffect, useState, type FormEvent } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
 import AdminDashboard from './dashboard/AdminDashboard'
+import AdminSetup from './AdminSetup'
 import MemberDashboard from './dashboard/MemberDashboard'
 
 type Account = { id: string; role: 'ADMIN' | 'MEMBER'; phone: string }
@@ -126,7 +127,7 @@ function App() {
               </div>
             </form>
             <nav aria-label="Account options" className="mt-7 flex flex-wrap gap-x-5 gap-y-3 text-emerald-900 underline">
-              {adminSignIn ? <a href="/member/login">Member sign in</a> : <a href="/admin/login">Admin sign in</a>}
+              {adminSignIn ? <><a href="/admin/setup">Create first admin account</a><a href="/member/login">Member sign in</a></> : <a href="/admin/login">Admin sign in</a>}
             </nav>
           </>
         )}
@@ -135,4 +136,4 @@ function App() {
   )
 }
 
-createRoot(document.getElementById('root')!).render(<StrictMode><App /></StrictMode>)
+createRoot(document.getElementById('root')!).render(<StrictMode>{window.location.pathname === '/admin/setup' ? <AdminSetup /> : <App />}</StrictMode>)

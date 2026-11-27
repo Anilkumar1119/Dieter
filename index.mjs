@@ -5,7 +5,7 @@ import { webFiles } from './backend/dist/vercel-web.js'
 
 const entry = express().disable('x-powered-by')
 const browserHeaders = helmet()
-const pages = ['/', '/index.html', '/admin/login', '/member/login', '/member/setup', '/member/reset']
+const pages = ['/', '/index.html', '/admin/login', '/admin/setup', '/member/login', '/member/setup', '/member/reset']
 
 entry.get(pages, browserHeaders, (_request, response) => {
   response.type('html').set('Cache-Control', 'no-cache').send(webFiles['index.html'])
