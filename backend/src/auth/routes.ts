@@ -14,15 +14,16 @@ export const phone = z.string().trim().max(32).transform((value) => {
   const normalized = value.replace(/[\s()-]/g, '')
   return /^[6-9]\d{9}$/.test(normalized) ? '+91' + normalized : normalized
 }).pipe(z.string().regex(/^\+[1-9]\d{7,14}$/))
-const password = z.string().min(12).max(72).refine((value) => Buffer.byteLength(value) <= 72)
+export const memberEmail = z.string().trim().toLowerCase().pipe(z.email().max(254))
 const phoneInput = z.object({ phone })
 const loginInput = phoneInput.extend({ password: z.string().min(1).max(72).refine((value) => Buffer.byteLength(value) <= 72) })
-const codeInput = phoneInput.extend({ password, code: z.string().regex(/^\d{6}$/) })
-const invalidInput = 'Check the phone number and other fields and try again.'
+const emailInput = z.object({ email: memberEmail })
+const codeInput = emailInput.extend({ code: z.string().regex(/^\d{6}$/) })
+const invalidInput = 'Check the phone number and password and try again.'
 const invalidCode = 'The code is invalid or expired. Request a new code and try again.'
-const sent = 'If this account is eligible, a code will be sent to the registered email address.'
+const sent = 'If this address is registered for an active membership, you’ll get a sign-in code. Check your inbox and spam folder.'
 const emailUnavailable = 'Email verification is unavailable. Ask the gym to check its email setup.'
-type OtpPurpose = 'SETUP' | 'PASSWORD_RESET'
+const purpose = 'SIGN_IN' as const
 const sessionIssuer = 'gym-member-management'
 
 export function protectAccountRequests(origin: string): RequestHandler {
@@ -98,42 +99,45 @@ export function createAuth(
     message: { error: 'Too many attempts. Try again later.' },
   })
 
-  function login(role: UserRole): RequestHandler {
-    return async (request, response) => {
-      const input = loginInput.safeParse(request.body)
-      if (!input.success) { response.status(400).json({ error: invalidInput }); return }
-      const user = await database.user.findUnique({ where: { phone: input.data.phone } })
-      const matches = await bcrypt.compare(input.data.password, user?.passwordHash ?? dummyHash)
-      if (!matches || !user?.active || user.role !== role || !user.passwordHash || !user.accountActivatedAt) {
-        response.status(401).json({ error: 'Phone number or password is incorrect.' })
-        return
-      }
-      const dbSession = await database.$transaction(async (transaction) => {
-        // Lock the user row through this guarded update so a concurrent reset or deactivation
-        // cannot invalidate access before a new session has been created.
-        const active = await transaction.user.updateMany({
-          where: { id: user.id, active: true, passwordHash: user.passwordHash },
-          data: { updatedAt: new Date() },
-        })
-        if (!active.count) return null
-        return transaction.session.create({
-          data: { userId: user.id, expiresAt: new Date(Date.now() + sessionDuration * 1000) },
-        })
-      })
-      if (!dbSession) { response.status(401).json({ error: 'Phone number or password is incorrect.' }); return }
-      const token = await new SignJWT({}).setProtectedHeader({ alg: 'HS256' })
-        .setSubject(dbSession.id).setIssuer(sessionIssuer).setAudience(sessionIssuer)
-        .setIssuedAt().setExpirationTime(Math.floor(dbSession.expiresAt.getTime() / 1000)).sign(options.secret)
-      response.cookie(cookieName, token, { ...cookie, maxAge: sessionDuration * 1000 })
-      response.json({ account: { id: user.id, role: user.role, phone: user.phone } })
+  const adminLogin: RequestHandler = async (request, response) => {
+    const input = loginInput.safeParse(request.body)
+    if (!input.success) { response.status(400).json({ error: invalidInput }); return }
+    const user = await database.user.findUnique({ where: { phone: input.data.phone } })
+    const matches = await bcrypt.compare(input.data.password, user?.passwordHash ?? dummyHash)
+    if (!matches || !user?.active || user.role !== 'ADMIN' || !user.passwordHash || !user.accountActivatedAt) {
+      response.status(401).json({ error: 'Phone number or password is incorrect.' })
+      return
     }
+    const dbSession = await database.$transaction(async (transaction) => {
+      // Lock the user row through this guarded update so a concurrent reset or deactivation
+      // cannot invalidate access before a new session has been created.
+      const active = await transaction.user.updateMany({
+        where: { id: user.id, active: true, passwordHash: user.passwordHash },
+        data: { updatedAt: new Date() },
+      })
+      if (!active.count) return null
+      return transaction.session.create({
+        data: { userId: user.id, expiresAt: new Date(Date.now() + sessionDuration * 1000) },
+      })
+    })
+    if (!dbSession) { response.status(401).json({ error: 'Phone number or password is incorrect.' }); return }
+    await sendSession(response, dbSession, user)
+  }
+
+  async function sendSession(response: express.Response, session: { id: string; expiresAt: Date },
+    user: { id: string; role: UserRole; phone: string }) {
+    const token = await new SignJWT({}).setProtectedHeader({ alg: 'HS256' })
+      .setSubject(session.id).setIssuer(sessionIssuer).setAudience(sessionIssuer)
+      .setIssuedAt().setExpirationTime(Math.floor(session.expiresAt.getTime() / 1000)).sign(options.secret)
+    response.cookie(cookieName, token, { ...cookie, maxAge: sessionDuration * 1000 })
+    response.json({ account: { id: user.id, role: user.role, phone: user.phone } })
   }
 
   function digestCode(deliveryId: string, code: string) {
     return createHmac('sha256', options.secret).update('dieter-email-otp:' + deliveryId + ':' + code).digest()
   }
 
-  async function sendCode(sender: EmailVerification, userId: string, email: string, purpose: OtpPurpose) {
+  async function sendCode(sender: EmailVerification, userId: string, email: string) {
     const now = new Date()
     const deliveryId = randomUUID()
     const code = randomInt(1_000_000).toString().padStart(6, '0')
@@ -153,34 +157,34 @@ export function createAuth(
         throw error
       }
     }
-    await sender.send({ to: email, code, purpose, requestId: deliveryId })
+    await sender.send({ to: email, code, requestId: deliveryId })
     const saved = await database.accountChallenge.updateMany({
-      where: { userId, purpose, deliveryId, user: { active: true, member: { email, archivedAt: null } } },
+      where: { userId, purpose, deliveryId, user: { active: true, member: { loginEmail: email, archivedAt: null } } },
       data: { codeDigest: digestCode(deliveryId, code).toString('hex') },
     })
     return saved.count ? 'sent' : 'changed'
   }
 
-  function requestCode(purpose: OtpPurpose, admin = false): RequestHandler {
+  function requestCode(admin = false): RequestHandler {
     return async (request, response) => {
-      const input = phoneInput.safeParse(request.body)
-      if (!input.success) { response.status(400).json({ error: invalidInput }); return }
+      const input = emailInput.safeParse(request.body)
+      if (!input.success) { response.status(400).json({ error: 'Enter a valid email address.' }); return }
       if (!options.email) { response.status(503).json({ error: emailUnavailable }); return }
 
+      const { email } = input.data
       const eligible = await database.user.findFirst({
-        where: { phone: input.data.phone, role: 'MEMBER', active: true, passwordHash: purpose === 'SETUP' ? null : { not: null } },
-        select: { id: true, member: { select: { email: true, archivedAt: true } } },
+        where: { role: 'MEMBER', active: true, member: { loginEmail: email, archivedAt: null } },
+        select: { id: true },
       })
-      const address = eligible?.member?.email
-      if (!address || eligible.member?.archivedAt) {
-        if (admin) response.status(409).json({ error: 'An eligible member account with a registered email address is required.' })
+      if (!eligible) {
+        if (admin) response.status(409).json({ error: 'An active member with this registered email address is required.' })
         else response.status(202).json({ message: sent })
         return
       }
       try {
-        const status = await sendCode(options.email, eligible.id, address, purpose)
+        const status = await sendCode(options.email, eligible.id, email)
         const adminMessages = {
-          sent: 'A verification code was sent to the registered email address.',
+          sent: 'Resend accepted the sign-in email.',
           cooldown: 'Wait one minute before requesting another code.',
           changed: 'The account changed while sending the code. Try again.',
         }
@@ -193,69 +197,62 @@ export function createAuth(
     }
   }
 
-  function completeCode(purpose: OtpPurpose): RequestHandler {
-    return async (request, response) => {
-      const input = codeInput.safeParse(request.body)
-      if (!input.success) { response.status(400).json({ error: invalidInput }); return }
-      if (!options.email) { response.status(503).json({ error: emailUnavailable }); return }
-      const { phone: number, code, password: newPassword } = input.data
-      const expectedPassword = purpose === 'SETUP' ? null : { not: null }
-      const challenge = await database.accountChallenge.findFirst({
-        where: {
-          purpose, usedAt: null, expiresAt: { gt: new Date() }, attempts: { lt: 5 },
-          codeDigest: { not: null },
-          user: { phone: number, role: 'MEMBER', active: true, passwordHash: expectedPassword },
-        },
-      })
-      if (!challenge?.codeDigest || !challenge.otpEmail) { response.status(400).json({ error: invalidCode }); return }
-      const challengeVersion = { id: challenge.id, deliveryId: challenge.deliveryId }
-      const recipient = { email: challenge.otpEmail, archivedAt: null }
-      const available = await database.accountChallenge.updateMany({
-        where: { ...challengeVersion, usedAt: null, attempts: { lt: 5 }, expiresAt: { gt: new Date() } },
-        data: { attempts: { increment: 1 } },
-      })
-      if (!available.count) { response.status(400).json({ error: invalidCode }); return }
-      const expected = Buffer.from(challenge.codeDigest, 'hex')
-      const actual = digestCode(challenge.deliveryId, code)
-      if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
-        response.status(400).json({ error: invalidCode })
-        return
-      }
-
-      const passwordHash = await bcrypt.hash(newPassword, 12)
-      const updated = await database.$transaction(async (transaction) => {
-        // All credential changes lock the account before touching its challenges or sessions.
-        const account = await transaction.user.updateMany({
-          where: { id: challenge.userId, phone: number, role: 'MEMBER', active: true, passwordHash: expectedPassword, member: recipient },
-          data: { updatedAt: new Date() },
-        })
-        if (!account.count) return false
-        const consumed = await transaction.accountChallenge.updateMany({
-          where: { ...challengeVersion, usedAt: null, expiresAt: { gt: new Date() } },
-          data: { usedAt: new Date() },
-        })
-        if (!consumed.count) return false
-        await transaction.user.update({
-          where: { id: challenge.userId },
-          data: { passwordHash, accountActivatedAt: new Date() },
-        })
-        await transaction.session.updateMany({
-          where: { userId: challenge.userId, revokedAt: null }, data: { revokedAt: new Date() },
-        })
-        return true
-      })
-      if (!updated) { response.status(400).json({ error: invalidCode }); return }
-      response.json({ message: 'Password saved. You can now sign in.' })
+  const verifyCode: RequestHandler = async (request, response) => {
+    const input = codeInput.safeParse(request.body)
+    if (!input.success) { response.status(400).json({ error: 'Check your email address and six-digit code.' }); return }
+    const { email, code } = input.data
+    const recipient = { loginEmail: email, archivedAt: null }
+    const challenge = await database.accountChallenge.findFirst({
+      where: {
+        purpose, otpEmail: email, usedAt: null, expiresAt: { gt: new Date() }, attempts: { lt: 5 },
+        codeDigest: { not: null },
+        user: { role: 'MEMBER', active: true, member: recipient },
+      },
+    })
+    if (!challenge?.codeDigest) { response.status(400).json({ error: invalidCode }); return }
+    const challengeVersion = { id: challenge.id, deliveryId: challenge.deliveryId }
+    const available = await database.accountChallenge.updateMany({
+      where: { ...challengeVersion, usedAt: null, attempts: { lt: 5 }, expiresAt: { gt: new Date() } },
+      data: { attempts: { increment: 1 } },
+    })
+    if (!available.count) { response.status(400).json({ error: invalidCode }); return }
+    const expected = Buffer.from(challenge.codeDigest, 'hex')
+    const actual = digestCode(challenge.deliveryId, code)
+    if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+      response.status(400).json({ error: invalidCode })
+      return
     }
+
+    const result = await database.$transaction(async (transaction) => {
+      // Use the same account-first lock order as member email changes and deactivation.
+      const account = await transaction.user.updateMany({
+        where: { id: challenge.userId, role: 'MEMBER', active: true, member: recipient },
+        data: { updatedAt: new Date() },
+      })
+      if (!account.count) return null
+      const consumed = await transaction.accountChallenge.updateMany({
+        where: { ...challengeVersion, usedAt: null, expiresAt: { gt: new Date() } },
+        data: { usedAt: new Date(), codeDigest: null },
+      })
+      if (!consumed.count) return null
+      await transaction.user.updateMany({
+        where: { id: challenge.userId, accountActivatedAt: null },
+        data: { accountActivatedAt: new Date() },
+      })
+      const session = await transaction.session.create({
+        data: { userId: challenge.userId, expiresAt: new Date(Date.now() + sessionDuration * 1000) },
+        include: { user: { select: { id: true, role: true, phone: true } } },
+      })
+      return session
+    })
+    if (!result) { response.status(400).json({ error: invalidCode }); return }
+    await sendSession(response, result, result.user)
   }
 
-  router.post('/member/login', limit(20), limitSignInByPhone, login('MEMBER'))
-  router.post('/admin/login', limit(15), limitSignInByPhone, login('ADMIN'))
-  router.post('/setup/request', limit(10), requestCode('SETUP'))
-  router.post('/setup/complete', limit(20), completeCode('SETUP'))
-  router.post('/reset/request', limit(10), requestCode('PASSWORD_RESET'))
-  router.post('/reset/complete', limit(20), completeCode('PASSWORD_RESET'))
-  router.post('/admin/reset-invitations', requireSession, requireRole('ADMIN'), limit(20), requestCode('PASSWORD_RESET', true))
+  router.post('/admin/login', limit(15), limitSignInByPhone, adminLogin)
+  router.post('/member/code/request', limit(10), requestCode())
+  router.post('/member/code/verify', limit(20), verifyCode)
+  router.post('/admin/invitations', requireSession, requireRole('ADMIN'), limit(30), requestCode(true))
   router.get('/me', requireSession, (_request, response) => response.json({ account: response.locals.account }))
   router.post('/logout', requireSession, async (_request, response) => {
     await database.session.updateMany({
@@ -263,8 +260,6 @@ export function createAuth(
     })
     response.clearCookie(cookieName, cookie).sendStatus(204)
   })
-
-  router.post('/admin/invitations', requireSession, requireRole('ADMIN'), limit(30), requestCode('SETUP', true))
 
   return { router, requireSession, requireRole }
 }

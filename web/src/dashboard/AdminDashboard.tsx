@@ -57,8 +57,9 @@ export default function AdminDashboard({ onLogout, loggingOut, error: signOutErr
     event.preventDefault()
     const form = new FormData(event.currentTarget)
     const existing = record.data?.profile
-    if (existing && form.get('phone') !== existing.user.phone &&
-      !window.confirm('Changing the mobile number signs the member out and requires account setup again. Continue?')) return
+    const updatedEmail = String(form.get('email') ?? '').trim().toLowerCase()
+    if (existing && updatedEmail !== (existing.email ?? '').trim().toLowerCase() &&
+      !window.confirm('Changing the email address revokes this member’s sessions and unused sign-in codes. Continue?')) return
     const body = {
       fullName: form.get('fullName'), age: Number(form.get('age')), phone: form.get('phone'),
       email: String(form.get('email') ?? '').trim(), admissionDate: form.get('admissionDate'), planId: form.get('planId'),
@@ -69,7 +70,7 @@ export default function AdminDashboard({ onLogout, loggingOut, error: signOutErr
         const created = await api<{ id: string }>('/admin/members', 'POST', body)
         openMember(created.id)
       }
-      return existing ? 'Member updated.' : 'Member added. Email a setup code when they are ready.'
+      return existing ? 'Member updated.' : 'Member added. They can request a sign-in code using their registered email.'
     })
   }
 
@@ -92,14 +93,13 @@ export default function AdminDashboard({ onLogout, loggingOut, error: signOutErr
     setFilter((value) => ({ ...value, page: 1, sort, order: value.sort === sort && value.order === 'asc' ? 'desc' : 'asc' }))
   }
 
-  function action(profile: Profile, type: 'toggle' | 'archive' | 'delete' | 'invite' | 'reset') {
+  function action(profile: Profile, type: 'toggle' | 'archive' | 'delete' | 'invite') {
     const path = '/admin/members/' + profile.id
     if (type === 'archive' && !window.confirm('Archive this member and stop future renewals? Their billing history will be kept.')) return
     if (type === 'delete' && !window.confirm('Permanently delete this member and their sign-in account?')) return
     void change(async () => {
-      if (type === 'invite' || type === 'reset') {
-        const route = type === 'invite' ? '/auth/admin/invitations' : '/auth/admin/reset-invitations'
-        const result = await api<{ message: string }>(route, 'POST', { phone: profile.user.phone })
+      if (type === 'invite') {
+        const result = await api<{ message: string }>('/auth/admin/invitations', 'POST', { email: profile.loginEmail })
         return result.message
       }
       if (type === 'toggle') {
@@ -238,9 +238,8 @@ export default function AdminDashboard({ onLogout, loggingOut, error: signOutErr
         </>}
         {profile && <div className="mt-5 flex flex-wrap gap-2 border-t border-slate-200 pt-4">
           {!profile.archivedAt && <>
-            {profile.user.active && !profile.email && <p className="w-full text-sm text-slate-700">Add a member email address to send setup or reset codes.</p>}
-            {profile.user.active && profile.email && !profile.user.accountActivatedAt && <button type="button" className={secondary} disabled={busy} onClick={() => action(profile, 'invite')}>Email setup code</button>}
-            {profile.user.active && profile.email && profile.user.accountActivatedAt && <button type="button" className={secondary} disabled={busy} onClick={() => action(profile, 'reset')}>Email reset code</button>}
+            {profile.user.active && !profile.loginEmail && <p className="w-full text-sm text-slate-700">Save a unique member email address to enable sign-in.</p>}
+            {profile.user.active && profile.loginEmail && <button type="button" className={secondary} disabled={busy} onClick={() => action(profile, 'invite')}>Email sign-in code</button>}
             <button type="button" className={secondary} disabled={busy} onClick={() => action(profile, 'toggle')}>{profile.user.active ? 'Disable sign-in' : 'Enable sign-in'}</button>
             <button type="button" className={secondary} disabled={busy} onClick={() => action(profile, 'archive')}>Archive member</button>
           </>}

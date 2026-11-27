@@ -1,6 +1,6 @@
 import express, { type RequestHandler } from 'express'
 import { z } from 'zod'
-import { type createAuth, phone, protectAccountRequests } from '../auth/routes.js'
+import { type createAuth, memberEmail, phone, protectAccountRequests } from '../auth/routes.js'
 import { Prisma, type PrismaClient } from '../generated/prisma/client.js'
 import { billingRenewal, gymToday, moveDays } from './billing-dates.js'
 import { mountNotificationRoutes } from './notification-routes.js'
@@ -16,7 +16,7 @@ const memberInput = z.object({
   fullName: z.string().trim().min(2).max(120),
   age: z.number().int().min(1).max(130),
   phone,
-  email: z.union([z.email().max(254), z.literal(''), z.null()]).transform((value) => value || null),
+  email: z.union([memberEmail, z.literal(''), z.null()]).transform((value) => value || null),
   admissionDate: z.iso.date().refine((value) => value >= '1900-01-01' && value <= '9998-12-31'),
   planId: z.uuid(),
 })
@@ -33,7 +33,7 @@ const planFields = {
   id: true, name: true, amountPaise: true, intervalMonths: true, active: true,
 } satisfies Prisma.FeePlanSelect
 const cardFields = {
-  id: true, fullName: true, age: true, email: true, admissionDate: true, archivedAt: true,
+  id: true, fullName: true, age: true, email: true, loginEmail: true, admissionDate: true, archivedAt: true,
   user: { select: { phone: true, active: true, accountActivatedAt: true } },
   membership: { select: { nextBillingDate: true, endsOn: true, currentPlan: { select: planFields }, pendingPlan: { select: planFields } } },
 } satisfies Prisma.MemberSelect
@@ -55,7 +55,7 @@ function write(handler: RequestHandler): RequestHandler {
     catch (error) {
       if (error instanceof Conflict) { response.status(409).json({ error: error.message }); return }
       if (error instanceof Prisma.PrismaClientKnownRequestError) {
-        if (error.code === 'P2002') { response.status(409).json({ error: 'That phone number or fee plan name is already in use.' }); return }
+        if (error.code === 'P2002') { response.status(409).json({ error: 'That phone number, email address, or fee plan name is already in use.' }); return }
         if (error.code === 'P2025') { response.status(404).json({ error: 'This record no longer exists.' }); return }
         if (error.code === 'P2034' || error.code === 'P2003') {
           response.status(409).json({ error: 'This record changed during your request. Refresh and try again.' }); return
@@ -64,6 +64,14 @@ function write(handler: RequestHandler): RequestHandler {
       next(error)
     }
   }
+}
+
+async function claimedEmail(transaction: Prisma.TransactionClient, email: string, memberId?: string) {
+  return transaction.member.findFirst({
+    where: { OR: [{ loginEmail: email }, { email: { equals: email, mode: 'insensitive' } }],
+      ...(memberId ? { id: { not: memberId } } : {}) },
+    select: { id: true },
+  })
 }
 
 async function logChange(transaction: Prisma.TransactionClient, actorId: string, action: string, entityType: string, entityId: string) {
@@ -183,8 +191,11 @@ export function createGymRoutes(database: PrismaClient, auth: ReturnType<typeof 
       const user = await tx.user.upsert({ where: { phone: number }, create: { phone: number, role: 'MEMBER' }, update: {},
         select: { id: true, role: true, active: true, member: { select: { id: true } } } })
       if (user.role !== 'MEMBER' || !user.active || user.member) throw new Conflict('That mobile number is already assigned.')
+      if (profile.email && await claimedEmail(tx, profile.email)) throw new Conflict('That email address is already assigned to another member.')
       const admitted = new Date(admissionDate)
-      const created = await tx.member.create({ data: { ...profile, userId: user.id, admissionDate: admitted } })
+      const created = await tx.member.create({
+        data: { ...profile, loginEmail: profile.email, userId: user.id, admissionDate: admitted },
+      })
       await initializeMembership(tx, created.id, admitted, plan)
       await logChange(tx, response.locals.account.id, 'MEMBER_CREATED', 'Member', created.id)
       return created
@@ -209,19 +220,28 @@ export function createGymRoutes(database: PrismaClient, auth: ReturnType<typeof 
       const existingPlan = planId === membership?.currentPlanId || planId === membership?.pendingPlanId
       const plan = await tx.feePlan.findFirst({ where: { id: planId, ...(existingPlan ? {} : { active: true }) }, select: planFields })
       if (!plan) throw new Conflict('Choose an active fee plan.')
+      let loginEmail = profile.email
+      if (loginEmail && await claimedEmail(tx, loginEmail, record.id)) {
+        if (record.loginEmail || loginEmail !== record.email?.trim().toLowerCase()) {
+          throw new Conflict('That email address is already assigned to another member.')
+        }
+        loginEmail = null
+      }
+
       const phoneChanged = number !== record.user.phone
-      if (phoneChanged || profile.email !== record.email) {
-        // Match the account-first lock order used when consuming verification codes.
+      const emailChanged = loginEmail !== record.loginEmail
+      if (phoneChanged || emailChanged) {
+        // Lock the user first, in the same order as code verification.
         await tx.user.update({
           where: { id: record.userId },
-          data: phoneChanged ? { phone: number, passwordHash: null, accountActivatedAt: null } : { updatedAt: new Date() },
+          data: { phone: number, ...(emailChanged ? { accountActivatedAt: null } : {}) },
         })
-        await tx.accountChallenge.deleteMany({ where: { userId: record.userId } })
-        if (phoneChanged) {
-          await tx.session.updateMany({ where: { userId: record.userId, revokedAt: null }, data: { revokedAt: new Date() } })
-        }
       }
-      await tx.member.update({ where: { id: record.id }, data: { ...profile, admissionDate: start } })
+      if (emailChanged) {
+        await tx.accountChallenge.deleteMany({ where: { userId: record.userId } })
+        await tx.session.updateMany({ where: { userId: record.userId, revokedAt: null }, data: { revokedAt: new Date() } })
+      }
+      await tx.member.update({ where: { id: record.id }, data: { ...profile, loginEmail, admissionDate: start } })
       if (!membership || !membership._count.bills) {
         if (membership) await tx.membership.delete({ where: { id: membership.id } })
         await initializeMembership(tx, record.id, start, plan)

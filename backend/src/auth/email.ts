@@ -1,5 +1,5 @@
 export interface EmailVerification {
-  send(input: { to: string; code: string; purpose: 'SETUP' | 'PASSWORD_RESET'; requestId: string }): Promise<void>
+  send(input: { to: string; code: string; requestId: string }): Promise<void>
 }
 
 export function createEmailVerification(): EmailVerification | undefined {
@@ -7,8 +7,7 @@ export function createEmailVerification(): EmailVerification | undefined {
   if (!RESEND_API_KEY || !RESEND_FROM_EMAIL) return
 
   return {
-    async send({ to, code, purpose, requestId }) {
-      const action = purpose === 'SETUP' ? 'set up your Dieter account' : 'reset your Dieter password'
+    async send({ to, code, requestId }) {
       const response = await fetch('https://api.resend.com/emails', {
         method: 'POST',
         headers: {
@@ -19,8 +18,8 @@ export function createEmailVerification(): EmailVerification | undefined {
         body: JSON.stringify({
           from: RESEND_FROM_EMAIL,
           to: [to],
-          subject: purpose === 'SETUP' ? 'Set up your Dieter account' : 'Reset your Dieter password',
-          text: 'Enter this code to ' + action + ': ' + code +
+          subject: 'Your Dieter sign-in code',
+          text: 'Enter this code to sign in to Dieter: ' + code +
             '\n\nThe code expires in 10 minutes. If you did not request it, you can ignore this email.',
         }),
         signal: AbortSignal.timeout(8_000),

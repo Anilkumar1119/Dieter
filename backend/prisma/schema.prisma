@@ -36,6 +36,7 @@ enum CheckoutStatus {
 enum ChallengePurpose {
   SETUP
   PASSWORD_RESET
+  SIGN_IN
 }
 
 enum NotificationKind {
@@ -69,6 +70,7 @@ model Member {
   fullName      String      @db.VarChar(120)
   age           Int
   email         String?     @db.VarChar(254)
+  loginEmail    String?     @unique @db.VarChar(254)
   admissionDate DateTime    @db.Date
   archivedAt    DateTime?
   membership    Membership?

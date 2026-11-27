@@ -42,13 +42,13 @@ The schema stores billing dates as date-only values and fees as integer paise. E
 
 For production, provide `DATABASE_URL` through the host's settings and run `npm run db:deploy` before releasing the app. Provision the real admin separately from the demo seed.
 
-## Step 3 · Phone login and account setup
+## Step 3 · Member email sign-in
 
 1. Complete Step 2. Set `APP_ORIGIN` in `backend/.env` to the exact browser origin (for example `http://localhost:5173` in Vite development or `http://localhost:4000` when Express serves the built site locally).
 2. Generate a random secret with the command below and put the result in `AUTH_SECRET` in `backend/.env`. Keep it private.
-3. Set `RESEND_API_KEY` and `RESEND_FROM_EMAIL` in `backend/.env` to enable email setup and password resets. Use a sender address on a domain verified in Resend. [Resend domain setup](https://resend.com/docs/dashboard/domains/introduction)
-4. Sign in at `/admin/login` with the demo admin phone and the password used for the seed. Create a test member with a registered email address, then choose **Email setup code** in their record. The invited member opens `/member/setup` to request or enter the code and choose a password. Everyday sign-in is at `/member/login`.
-5. Use `/member/reset` for member recovery. Saving a new password revokes existing sessions. Admins use separate sign-in and should be provisioned by an operator.
+3. Set `RESEND_API_KEY` and `RESEND_FROM_EMAIL` in `backend/.env` to enable member sign-in codes. Use a sender address on a domain verified in Resend. [Resend domain setup](https://resend.com/docs/dashboard/domains/introduction)
+4. Sign in at `/admin/login` with the demo admin phone and the password used for the seed. Create a test member with a unique, registered email address. The member opens `/member/login`, requests a code, and enters it to sign in.
+5. Provision the production admin separately. Admins sign in with their phone number and password at `/admin/login`.
 
 ```sh
 node -p "require('node:crypto').randomBytes(32).toString('hex')"
@@ -56,7 +56,7 @@ npm run db:deploy
 npm run build
 ```
 
-Setup codes are sent to the member email on file and expire after 10 minutes. A member without an email can keep signing in with an existing password. Add an email before asking them to set or reset their password. The API currently applies per-IP request limits in the running Express instance, plus database-backed verification attempts and resend cooldowns for individual accounts. Configure a validated proxy strategy and shared IP rate limiting if the service is scaled across processes. Set `NODE_ENV=production` and use the HTTPS browser origin on your host.
+Sign-in codes are single-use and expire after 10 minutes. Members need a unique email address on file. If existing profiles share an address, the gym must give each member a separate address and save their profiles before they can sign in. The API currently applies per-IP request limits in the running Express instance, plus database-backed verification attempts and resend cooldowns for individual accounts. Configure a validated proxy strategy and shared IP rate limiting if the service is scaled across processes. Set `NODE_ENV=production` and use the HTTPS browser origin on your host.
 
 To provision a standalone admin, provide `ADMIN_BOOTSTRAP_PHONE` in international format and `ADMIN_BOOTSTRAP_PASSWORD` as temporary secrets, then run `npm run auth:create-admin --workspace api` from the project root. The operator is responsible for verifying that the intended administrator controls the supplied number. This command creates a new account and cannot overwrite an existing account.
 
@@ -64,7 +64,7 @@ To provision a standalone admin, provide `ADMIN_BOOTSTRAP_PHONE` in internationa
 ## Step 4 · Dashboards and member management
 
 - Sign in as an admin to use **Overview**, **Members**, and **Fee plans**. The member list supports name or phone search, sorting, pagination, and archived records.
-- Create a fee plan, add a member with that plan, then open the member record to email a setup code. Disabling sign-in revokes active sessions. Changing the phone number requires setup for the new number.
+- Create a fee plan, add a member with that plan, then open the member record to email a sign-in code. Disabling sign-in or changing the login email revokes active sessions and unused codes.
 - An admitted member's first bill is due on admission. Assigning a different plan to a billed membership schedules it for the next renewal. Future admissions can be edited until their first bill is issued. The daily job issues subsequent bills.
 - Archive members with billing history to stop future renewals while preserving financial records. Records with no issued bills may be deleted.
 - The member dashboard shows the signed-in member's profile, plan, next renewal, oldest unpaid bill and paginated bills and payment history. The overview counts members who made a payment in the current Kolkata calendar month and lists due and overdue bills in date order.
