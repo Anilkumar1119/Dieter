@@ -1,0 +1,228 @@
+generator client {
+  provider            = "prisma-client"
+  output              = "../src/generated/prisma"
+  importFileExtension = "js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRole {
+  ADMIN
+  MEMBER
+}
+
+enum BillStatus {
+  OPEN
+  PAID
+  VOID
+}
+
+enum PaymentMethod {
+  CASH
+  BANK_TRANSFER
+  OFFLINE_UPI
+  ONLINE_UPI
+}
+
+enum CheckoutStatus {
+  OPEN
+  CAPTURED
+  FAILED
+  EXPIRED
+}
+
+enum ChallengePurpose {
+  SETUP
+  PASSWORD_RESET
+}
+
+enum NotificationKind {
+  DUE_SOON
+  DUE_TODAY
+  ADMIN_DUE_DIGEST
+  PAYMENT_RECEIVED
+}
+
+model User {
+  id               String             @id @default(uuid()) @db.Uuid
+  role             UserRole
+  phone            String             @unique @db.VarChar(16)
+  passwordHash     String?
+  phoneVerifiedAt  DateTime?
+  active           Boolean            @default(true)
+  createdAt        DateTime           @default(now())
+  updatedAt        DateTime           @updatedAt
+  member           Member?
+  sessions         Session[]
+  challenges       AccountChallenge[]
+  notifications    Notification[]
+  auditEntries     AuditLog[]
+  recordedPayments Payment[]          @relation("RecordedBy")
+}
+
+model Member {
+  id            String      @id @default(uuid()) @db.Uuid
+  userId        String      @unique @db.Uuid
+  user          User        @relation(fields: [userId], references: [id], onDelete: Restrict)
+  fullName      String      @db.VarChar(120)
+  age           Int
+  email         String?     @db.VarChar(254)
+  admissionDate DateTime    @db.Date
+  archivedAt    DateTime?
+  membership    Membership?
+
+  @@index([fullName])
+}
+
+model FeePlan {
+  id             String       @id @default(uuid()) @db.Uuid
+  name           String       @unique @db.VarChar(80)
+  amountPaise    Int
+  intervalMonths Int
+  active         Boolean      @default(true)
+  createdAt      DateTime     @default(now())
+  memberships    Membership[] @relation("CurrentPlan")
+  pendingChanges Membership[] @relation("PendingPlan")
+}
+
+model Membership {
+  id              String    @id @default(uuid()) @db.Uuid
+  memberId        String    @unique @db.Uuid
+  member          Member    @relation(fields: [memberId], references: [id], onDelete: Restrict)
+  currentPlanId   String    @db.Uuid
+  currentPlan     FeePlan   @relation("CurrentPlan", fields: [currentPlanId], references: [id], onDelete: Restrict)
+  pendingPlanId   String?   @db.Uuid
+  pendingPlan     FeePlan?  @relation("PendingPlan", fields: [pendingPlanId], references: [id], onDelete: Restrict)
+  cycleAnchorDate DateTime  @db.Date
+  nextBillingDate DateTime  @db.Date
+  endsOn          DateTime? @db.Date
+  bills           Bill[]
+
+  @@index([nextBillingDate])
+}
+
+model Bill {
+  id                 String            @id @default(uuid()) @db.Uuid
+  membershipId       String            @db.Uuid
+  membership         Membership        @relation(fields: [membershipId], references: [id], onDelete: Restrict)
+  periodStart        DateTime          @db.Date
+  periodEnd          DateTime          @db.Date
+  dueDate            DateTime          @db.Date
+  amountPaise        Int
+  planName           String            @db.VarChar(80)
+  planIntervalMonths Int
+  status             BillStatus        @default(OPEN)
+  createdAt          DateTime          @default(now())
+  payments           Payment[]
+  checkoutAttempts   CheckoutAttempt[]
+  notifications      Notification[]
+
+  @@unique([membershipId, periodStart])
+  @@index([status, dueDate])
+}
+
+model Payment {
+  id                String        @id @default(uuid()) @db.Uuid
+  billId            String        @db.Uuid
+  bill              Bill          @relation(fields: [billId], references: [id], onDelete: Restrict)
+  amountPaise       Int
+  method            PaymentMethod
+  providerPaymentId String?       @unique
+  reference         String?
+  receiptNumber     String        @unique
+  receivedAt        DateTime
+  recordedById      String?       @db.Uuid
+  recordedBy        User?         @relation("RecordedBy", fields: [recordedById], references: [id], onDelete: SetNull)
+  createdAt         DateTime      @default(now())
+
+  @@index([billId, receivedAt])
+  @@index([receivedAt])
+}
+
+model CheckoutAttempt {
+  id              String         @id @default(uuid()) @db.Uuid
+  billId          String         @db.Uuid
+  bill            Bill           @relation(fields: [billId], references: [id], onDelete: Restrict)
+  providerOrderId String         @unique
+  amountPaise     Int
+  status          CheckoutStatus @default(OPEN)
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  @@index([billId, status])
+}
+
+model WebhookEvent {
+  providerEventId String   @id
+  eventType       String
+  processedAt     DateTime @default(now())
+}
+
+model Session {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @db.Uuid
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  revokedAt DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId, revokedAt])
+  @@index([expiresAt])
+}
+
+model AccountChallenge {
+  id                String           @id @default(uuid()) @db.Uuid
+  userId            String           @db.Uuid
+  user              User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  purpose           ChallengePurpose
+  providerReference String
+  expiresAt         DateTime
+  attempts          Int              @default(0)
+  usedAt            DateTime?
+  createdAt         DateTime         @default(now())
+
+  @@unique([userId, purpose])
+  @@index([userId, purpose, expiresAt])
+}
+
+model Notification {
+  id               String           @id @default(uuid()) @db.Uuid
+  recipientId      String           @db.Uuid
+  recipient        User             @relation(fields: [recipientId], references: [id], onDelete: Cascade)
+  billId           String?          @db.Uuid
+  bill             Bill?            @relation(fields: [billId], references: [id], onDelete: Restrict)
+  kind             NotificationKind
+  message          String
+  deduplicationKey String           @unique
+  readAt           DateTime?
+  createdAt        DateTime         @default(now())
+
+  @@index([recipientId, readAt, createdAt])
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  actorId    String?  @db.Uuid
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action     String
+  entityType String
+  entityId   String
+  details    Json?
+  createdAt  DateTime @default(now())
+
+  @@index([entityType, entityId, createdAt])
+}
+
+model JobRun {
+  id           String    @id @default(uuid()) @db.Uuid
+  name         String
+  businessDate DateTime  @db.Date
+  startedAt    DateTime  @default(now())
+  finishedAt   DateTime?
+  succeeded    Boolean?
+  summary      Json?
+
+  @@index([name, businessDate, startedAt])
+}

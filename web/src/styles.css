@@ -1,0 +1,11 @@
+@import "tailwindcss";
+
+body {
+  background: #edf4f0;
+  color: #13241e;
+}
+
+:focus-visible {
+  outline: 3px solid #047857;
+  outline-offset: 3px;
+}
