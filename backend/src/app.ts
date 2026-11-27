@@ -3,7 +3,7 @@ import express, { type ErrorRequestHandler } from 'express'
 import helmet from 'helmet'
 import { fileURLToPath } from 'node:url'
 import { createAuth } from './auth/routes.js'
-import { createSmsVerification } from './auth/sms.js'
+import { createEmailVerification } from './auth/email.js'
 import { createDatabaseClient } from './db.js'
 import { createGymRoutes } from './gym/routes.js'
 import { startReminderSchedule } from './jobs/reminder-schedule.js'
@@ -42,7 +42,7 @@ if (DATABASE_URL) {
     secret: Buffer.from(AUTH_SECRET, 'hex'),
     origin: origin.origin,
     secure,
-    sms: createSmsVerification(),
+    email: createEmailVerification(),
   })
   app.use('/api/auth', auth.router)
   const gym = createGymRoutes(database, auth, origin.origin)

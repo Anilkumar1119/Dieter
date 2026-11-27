@@ -69,7 +69,7 @@ export default function AdminDashboard({ onLogout, loggingOut, error: signOutErr
         const created = await api<{ id: string }>('/admin/members', 'POST', body)
         openMember(created.id)
       }
-      return existing ? 'Member updated.' : 'Member added. Send a setup code when they are ready.'
+      return existing ? 'Member updated.' : 'Member added. Email a setup code when they are ready.'
     })
   }
 
@@ -238,8 +238,9 @@ export default function AdminDashboard({ onLogout, loggingOut, error: signOutErr
         </>}
         {profile && <div className="mt-5 flex flex-wrap gap-2 border-t border-slate-200 pt-4">
           {!profile.archivedAt && <>
-            {profile.user.active && !profile.user.phoneVerifiedAt && <button type="button" className={secondary} disabled={busy} onClick={() => action(profile, 'invite')}>Send setup code</button>}
-            {profile.user.active && profile.user.phoneVerifiedAt && <button type="button" className={secondary} disabled={busy} onClick={() => action(profile, 'reset')}>Send reset code</button>}
+            {profile.user.active && !profile.email && <p className="w-full text-sm text-slate-700">Add a member email address to send setup or reset codes.</p>}
+            {profile.user.active && profile.email && !profile.user.accountActivatedAt && <button type="button" className={secondary} disabled={busy} onClick={() => action(profile, 'invite')}>Email setup code</button>}
+            {profile.user.active && profile.email && profile.user.accountActivatedAt && <button type="button" className={secondary} disabled={busy} onClick={() => action(profile, 'reset')}>Email reset code</button>}
             <button type="button" className={secondary} disabled={busy} onClick={() => action(profile, 'toggle')}>{profile.user.active ? 'Disable sign-in' : 'Enable sign-in'}</button>
             <button type="button" className={secondary} disabled={busy} onClick={() => action(profile, 'archive')}>Archive member</button>
           </>}

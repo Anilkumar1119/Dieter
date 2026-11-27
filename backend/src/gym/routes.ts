@@ -34,7 +34,7 @@ const planFields = {
 } satisfies Prisma.FeePlanSelect
 const cardFields = {
   id: true, fullName: true, age: true, email: true, admissionDate: true, archivedAt: true,
-  user: { select: { phone: true, active: true, phoneVerifiedAt: true } },
+  user: { select: { phone: true, active: true, accountActivatedAt: true } },
   membership: { select: { nextBillingDate: true, endsOn: true, currentPlan: { select: planFields }, pendingPlan: { select: planFields } } },
 } satisfies Prisma.MemberSelect
 const billFields = {
@@ -209,10 +209,17 @@ export function createGymRoutes(database: PrismaClient, auth: ReturnType<typeof 
       const existingPlan = planId === membership?.currentPlanId || planId === membership?.pendingPlanId
       const plan = await tx.feePlan.findFirst({ where: { id: planId, ...(existingPlan ? {} : { active: true }) }, select: planFields })
       if (!plan) throw new Conflict('Choose an active fee plan.')
-      if (number !== record.user.phone) {
-        await tx.user.update({ where: { id: record.userId }, data: { phone: number, passwordHash: null, phoneVerifiedAt: null } })
-        await tx.session.updateMany({ where: { userId: record.userId, revokedAt: null }, data: { revokedAt: new Date() } })
+      const phoneChanged = number !== record.user.phone
+      if (phoneChanged || profile.email !== record.email) {
+        // Match the account-first lock order used when consuming verification codes.
+        await tx.user.update({
+          where: { id: record.userId },
+          data: phoneChanged ? { phone: number, passwordHash: null, accountActivatedAt: null } : { updatedAt: new Date() },
+        })
         await tx.accountChallenge.deleteMany({ where: { userId: record.userId } })
+        if (phoneChanged) {
+          await tx.session.updateMany({ where: { userId: record.userId, revokedAt: null }, data: { revokedAt: new Date() } })
+        }
       }
       await tx.member.update({ where: { id: record.id }, data: { ...profile, admissionDate: start } })
       if (!membership || !membership._count.bills) {

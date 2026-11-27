@@ -3,7 +3,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 export type Plan = { id: string; name: string; amountPaise: number; intervalMonths: number; active: boolean }
 export type Profile = {
   id: string; fullName: string; age: number; email: string | null; admissionDate: string; archivedAt: string | null
-  user: { phone: string; active: boolean; phoneVerifiedAt: string | null }
+  user: { phone: string; active: boolean; accountActivatedAt: string | null }
   membership: { nextBillingDate: string; endsOn: string | null; currentPlan: Plan; pendingPlan: Plan | null } | null
 }
 export type Payment = { id: string; amountPaise: number; method: string; receivedAt: string; receiptNumber: string }
@@ -21,7 +21,7 @@ export const inr = (paise: number) => new Intl.NumberFormat('en-IN', { style: 'c
 export const dateLabel = (date: string) => new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeZone: 'Asia/Kolkata' }).format(new Date(date))
 export const planTerm = (months: number) => ({ 1: 'Monthly', 3: 'Quarterly', 12: 'Annual' })[months] ?? months + ' months'
 export const balance = (bill: Bill) => Math.max(0, bill.amountPaise - bill.payments.reduce((sum, payment) => sum + payment.amountPaise, 0))
-export const accountStatus = (profile: Profile) => profile.archivedAt ? 'Archived' : !profile.user.active ? 'Disabled' : profile.user.phoneVerifiedAt ? 'Active' : 'Setup pending'
+export const accountStatus = (profile: Profile) => profile.archivedAt ? 'Archived' : !profile.user.active ? 'Disabled' : profile.user.accountActivatedAt ? 'Active' : 'Setup pending'
 export const feeStatus = (bill: Bill, today?: string) => bill.status === 'PAID' ? 'Paid' : bill.status === 'VOID' ? 'Void'
   : today && bill.dueDate.slice(0, 10) < today.slice(0, 10) ? 'Overdue'
     : today && bill.dueDate.slice(0, 10) === today.slice(0, 10) ? 'Due today' : 'Unpaid'

@@ -102,13 +102,14 @@ function App() {
         {!checking && (
           <>
             <form onSubmit={submit} className="mt-6 space-y-5">
+              {verification && <p className="text-sm text-slate-700">Enter your mobile number to find your account. We’ll send the code to the email address registered with your gym.</p>}
               <label className="block font-medium">Registered mobile number
                 <input className={fieldClass} value={phone} onChange={(event) => { setPhone(event.target.value); setCodeSent(false) }}
                   name="phone" type="tel" autoComplete="tel" placeholder="+91 98765 43210" required />
               </label>
               {verification && codeSent && (
-                <label className="block font-medium">SMS verification code
-                  <input className={fieldClass} name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{4,10}" required />
+                <label className="block font-medium">Email verification code
+                  <input className={fieldClass} name="code" inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" maxLength={6} required />
                 </label>
               )}
               {(!verification || codeSent) && (

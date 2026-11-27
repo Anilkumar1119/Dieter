@@ -23,7 +23,7 @@ try {
     const admin = await transaction.user.upsert({
       where: { phone: '+12025550100' },
       update: {},
-      create: { phone: '+12025550100', role: 'ADMIN', passwordHash, phoneVerifiedAt: verifiedAt },
+      create: { phone: '+12025550100', role: 'ADMIN', passwordHash, accountActivatedAt: verifiedAt },
     })
 
     const sampleMembers = [
@@ -44,7 +44,7 @@ try {
       const user = await transaction.user.upsert({
         where: { phone: sample.phone },
         update: {},
-        create: { phone: sample.phone, role: 'MEMBER', passwordHash, phoneVerifiedAt: verifiedAt },
+        create: { phone: sample.phone, role: 'MEMBER', passwordHash, accountActivatedAt: verifiedAt },
       })
       const member = await transaction.member.upsert({
         where: { userId: user.id },

@@ -1,11 +1,11 @@
-import { randomUUID } from 'node:crypto'
+import { createHmac, randomInt, randomUUID, timingSafeEqual } from 'node:crypto'
 import bcrypt from 'bcryptjs'
 import express, { type RequestHandler } from 'express'
 import { rateLimit } from 'express-rate-limit'
 import { SignJWT, jwtVerify } from 'jose'
 import { z } from 'zod'
 import { Prisma, type PrismaClient, type UserRole } from '../generated/prisma/client.js'
-import type { SmsVerification } from './sms.js'
+import type { EmailVerification } from './email.js'
 
 const sessionDuration = 8 * 60 * 60
 const challengeDuration = 10 * 60 * 1000
@@ -17,10 +17,12 @@ export const phone = z.string().trim().max(32).transform((value) => {
 const password = z.string().min(12).max(72).refine((value) => Buffer.byteLength(value) <= 72)
 const phoneInput = z.object({ phone })
 const loginInput = phoneInput.extend({ password: z.string().min(1).max(72).refine((value) => Buffer.byteLength(value) <= 72) })
-const codeInput = phoneInput.extend({ password, code: z.string().regex(/^\d{4,10}$/) })
+const codeInput = phoneInput.extend({ password, code: z.string().regex(/^\d{6}$/) })
 const invalidInput = 'Check the phone number and other fields and try again.'
 const invalidCode = 'The code is invalid or expired. Request a new code and try again.'
-const sent = 'If this account is eligible, a verification code will be sent.'
+const sent = 'If this account is eligible, a code will be sent to the registered email address.'
+const emailUnavailable = 'Email verification is unavailable. Ask the gym to check its email setup.'
+type OtpPurpose = 'SETUP' | 'PASSWORD_RESET'
 const sessionIssuer = 'gym-member-management'
 
 export function protectAccountRequests(origin: string): RequestHandler {
@@ -38,7 +40,7 @@ export function protectAccountRequests(origin: string): RequestHandler {
 
 export function createAuth(
   database: PrismaClient,
-  options: { secret: Uint8Array; origin: string; secure: boolean; sms?: SmsVerification },
+  options: { secret: Uint8Array; origin: string; secure: boolean; email?: EmailVerification },
 ) {
   const router = express.Router()
   const cookieName = options.secure ? '__Host-gym_session' : 'gym_session'
@@ -102,7 +104,7 @@ export function createAuth(
       if (!input.success) { response.status(400).json({ error: invalidInput }); return }
       const user = await database.user.findUnique({ where: { phone: input.data.phone } })
       const matches = await bcrypt.compare(input.data.password, user?.passwordHash ?? dummyHash)
-      if (!matches || !user?.active || user.role !== role || !user.passwordHash || !user.phoneVerifiedAt) {
+      if (!matches || !user?.active || user.role !== role || !user.passwordHash || !user.accountActivatedAt) {
         response.status(401).json({ error: 'Phone number or password is incorrect.' })
         return
       }
@@ -127,11 +129,16 @@ export function createAuth(
     }
   }
 
-  async function sendCode(userId: string, number: string, purpose: 'SETUP' | 'PASSWORD_RESET') {
+  function digestCode(deliveryId: string, code: string) {
+    return createHmac('sha256', options.secret).update('dieter-email-otp:' + deliveryId + ':' + code).digest()
+  }
+
+  async function sendCode(sender: EmailVerification, userId: string, email: string, purpose: OtpPurpose) {
     const now = new Date()
-    const reservation = 'pending:' + randomUUID()
+    const deliveryId = randomUUID()
+    const code = randomInt(1_000_000).toString().padStart(6, '0')
     const fields = {
-      providerReference: reservation, expiresAt: new Date(now.getTime() + challengeDuration),
+      deliveryId, otpEmail: email, codeDigest: null, expiresAt: new Date(now.getTime() + challengeDuration),
       createdAt: now, usedAt: null, attempts: 0,
     }
     const current = await database.accountChallenge.updateMany({
@@ -142,64 +149,84 @@ export function createAuth(
       try {
         await database.accountChallenge.create({ data: { userId, purpose, ...fields } })
       } catch (error) {
-        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return
+        if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002') return 'cooldown'
         throw error
       }
     }
-    const reference = await options.sms!.send(number)
-    await database.accountChallenge.updateMany({
-      where: { userId, purpose, providerReference: reservation },
-      data: { providerReference: reference },
+    await sender.send({ to: email, code, purpose, requestId: deliveryId })
+    const saved = await database.accountChallenge.updateMany({
+      where: { userId, purpose, deliveryId, user: { active: true, member: { email, archivedAt: null } } },
+      data: { codeDigest: digestCode(deliveryId, code).toString('hex') },
     })
+    return saved.count ? 'sent' : 'changed'
   }
 
-  function requestCode(purpose: 'SETUP' | 'PASSWORD_RESET'): RequestHandler {
+  function requestCode(purpose: OtpPurpose, admin = false): RequestHandler {
     return async (request, response) => {
       const input = phoneInput.safeParse(request.body)
       if (!input.success) { response.status(400).json({ error: invalidInput }); return }
-      if (!options.sms) { response.status(503).json({ error: 'SMS verification is unavailable.' }); return }
+      if (!options.email) { response.status(503).json({ error: emailUnavailable }); return }
+
       const eligible = await database.user.findFirst({
         where: { phone: input.data.phone, role: 'MEMBER', active: true, passwordHash: purpose === 'SETUP' ? null : { not: null } },
+        select: { id: true, member: { select: { email: true, archivedAt: true } } },
       })
-      if (eligible) {
-        try { await sendCode(eligible.id, eligible.phone, purpose) }
-        catch { console.error('Member verification could not be sent.') }
+      const address = eligible?.member?.email
+      if (!address || eligible.member?.archivedAt) {
+        if (admin) response.status(409).json({ error: 'An eligible member account with a registered email address is required.' })
+        else response.status(202).json({ message: sent })
+        return
       }
-      response.status(202).json({ message: sent })
+      try {
+        const status = await sendCode(options.email, eligible.id, address, purpose)
+        const adminMessages = {
+          sent: 'A verification code was sent to the registered email address.',
+          cooldown: 'Wait one minute before requesting another code.',
+          changed: 'The account changed while sending the code. Try again.',
+        }
+        response.status(202).json({ message: admin ? adminMessages[status] : sent })
+      } catch {
+        console.error('Member verification email could not be sent.')
+        if (admin) response.status(503).json({ error: emailUnavailable })
+        else response.status(202).json({ message: sent })
+      }
     }
   }
 
-  function completeCode(purpose: 'SETUP' | 'PASSWORD_RESET'): RequestHandler {
+  function completeCode(purpose: OtpPurpose): RequestHandler {
     return async (request, response) => {
       const input = codeInput.safeParse(request.body)
       if (!input.success) { response.status(400).json({ error: invalidInput }); return }
-      if (!options.sms) { response.status(503).json({ error: 'SMS verification is unavailable.' }); return }
+      if (!options.email) { response.status(503).json({ error: emailUnavailable }); return }
       const { phone: number, code, password: newPassword } = input.data
       const expectedPassword = purpose === 'SETUP' ? null : { not: null }
       const challenge = await database.accountChallenge.findFirst({
         where: {
           purpose, usedAt: null, expiresAt: { gt: new Date() }, attempts: { lt: 5 },
-          providerReference: { not: { startsWith: 'pending:' } },
+          codeDigest: { not: null },
           user: { phone: number, role: 'MEMBER', active: true, passwordHash: expectedPassword },
         },
       })
-      if (!challenge) { response.status(400).json({ error: invalidCode }); return }
-      const challengeVersion = { id: challenge.id, providerReference: challenge.providerReference, createdAt: challenge.createdAt }
+      if (!challenge?.codeDigest || !challenge.otpEmail) { response.status(400).json({ error: invalidCode }); return }
+      const challengeVersion = { id: challenge.id, deliveryId: challenge.deliveryId }
+      const recipient = { email: challenge.otpEmail, archivedAt: null }
       const available = await database.accountChallenge.updateMany({
         where: { ...challengeVersion, usedAt: null, attempts: { lt: 5 }, expiresAt: { gt: new Date() } },
         data: { attempts: { increment: 1 } },
       })
       if (!available.count) { response.status(400).json({ error: invalidCode }); return }
-      let approved: boolean
-      try { approved = await options.sms.check(challenge.providerReference, code) }
-      catch { response.status(503).json({ error: 'SMS verification is unavailable.' }); return }
-      if (!approved) { response.status(400).json({ error: invalidCode }); return }
+      const expected = Buffer.from(challenge.codeDigest, 'hex')
+      const actual = digestCode(challenge.deliveryId, code)
+      if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+        response.status(400).json({ error: invalidCode })
+        return
+      }
 
       const passwordHash = await bcrypt.hash(newPassword, 12)
       const updated = await database.$transaction(async (transaction) => {
         // All credential changes lock the account before touching its challenges or sessions.
         const account = await transaction.user.updateMany({
-          where: { id: challenge.userId, role: 'MEMBER', active: true, passwordHash: expectedPassword },
+          where: { id: challenge.userId, phone: number, role: 'MEMBER', active: true, passwordHash: expectedPassword, member: recipient },
           data: { updatedAt: new Date() },
         })
         if (!account.count) return false
@@ -210,7 +237,7 @@ export function createAuth(
         if (!consumed.count) return false
         await transaction.user.update({
           where: { id: challenge.userId },
-          data: { passwordHash, phoneVerifiedAt: new Date() },
+          data: { passwordHash, accountActivatedAt: new Date() },
         })
         await transaction.session.updateMany({
           where: { userId: challenge.userId, revokedAt: null }, data: { revokedAt: new Date() },
@@ -228,7 +255,7 @@ export function createAuth(
   router.post('/setup/complete', limit(20), completeCode('SETUP'))
   router.post('/reset/request', limit(10), requestCode('PASSWORD_RESET'))
   router.post('/reset/complete', limit(20), completeCode('PASSWORD_RESET'))
-  router.post('/admin/reset-invitations', requireSession, requireRole('ADMIN'), limit(20), requestCode('PASSWORD_RESET'))
+  router.post('/admin/reset-invitations', requireSession, requireRole('ADMIN'), limit(20), requestCode('PASSWORD_RESET', true))
   router.get('/me', requireSession, (_request, response) => response.json({ account: response.locals.account }))
   router.post('/logout', requireSession, async (_request, response) => {
     await database.session.updateMany({
@@ -237,26 +264,7 @@ export function createAuth(
     response.clearCookie(cookieName, cookie).sendStatus(204)
   })
 
-  router.post('/admin/invitations', requireSession, requireRole('ADMIN'), limit(30), async (request, response) => {
-    const input = phoneInput.safeParse(request.body)
-    if (!input.success) { response.status(400).json({ error: invalidInput }); return }
-    const { phone: number } = input.data
-    const account = await database.user.upsert({
-      where: { phone: number }, create: { phone: number, role: 'MEMBER' }, update: {},
-    })
-    if (account.role !== 'MEMBER' || !account.active || account.passwordHash) {
-      response.status(409).json({ error: 'That number cannot be invited.' })
-      return
-    }
-    let status = 'SMS unavailable. The member can request setup once verification is configured.'
-    if (options.sms) {
-      try {
-        await sendCode(account.id, account.phone, 'SETUP')
-        status = 'The account is pending setup. Check the registered phone for the verification code.'
-      } catch { status = 'The account is pending setup. SMS delivery could not be started.' }
-    }
-    response.status(202).json({ message: status })
-  })
+  router.post('/admin/invitations', requireSession, requireRole('ADMIN'), limit(30), requestCode('SETUP', true))
 
   return { router, requireSession, requireRole }
 }

@@ -16,7 +16,7 @@ try {
       phone: ADMIN_BOOTSTRAP_PHONE,
       role: 'ADMIN',
       passwordHash: await bcrypt.hash(ADMIN_BOOTSTRAP_PASSWORD, 12),
-      phoneVerifiedAt: new Date(),
+      accountActivatedAt: new Date(),
     },
   })
   console.log('Admin account created.')
