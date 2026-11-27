@@ -22,7 +22,7 @@ After building, run `npm start` to serve the website and API together at `http:/
 ## Step 2 · PostgreSQL and Prisma
 
 1. Create an empty PostgreSQL database for development. Use a dedicated development user with access to that database. Prisma's `migrate dev` also needs access to a shadow database when creating migrations.
-2. Copy `api/.env.example` to `api/.env` and replace `DATABASE_URL` with your PostgreSQL connection string. For a managed database, use the connection settings supplied by your provider.
+2. Copy `backend/.env.example` to `backend/.env` and replace `DATABASE_URL` with your PostgreSQL connection string. For a managed database, use the connection settings supplied by your provider.
 3. Apply the checked-in migration. For schema changes during development, use `npm run db:migrate` and commit the resulting SQL migration.
 
 ```sh
@@ -30,7 +30,7 @@ npm ci
 npm run db:deploy
 ```
 
-4. To load demonstration data, set `DEMO_SEED_PASSWORD` in `api/.env` to a private development password of at least 12 characters and no more than 72 bytes, then run:
+4. To load demonstration data, set `DEMO_SEED_PASSWORD` in `backend/.env` to a private development password of at least 12 characters and no more than 72 bytes, then run:
 
 ```sh
 npm run db:seed
@@ -44,9 +44,9 @@ For production, provide `DATABASE_URL` through the host's settings and run `npm 
 
 ## Step 3 · Phone login and account setup
 
-1. Complete Step 2. Set `APP_ORIGIN` in `api/.env` to the exact browser origin (for example `http://localhost:5173` in Vite development or `http://localhost:4000` when Express serves the built site locally).
-2. Generate a random secret with the command below and put the result in `AUTH_SECRET` in `api/.env`. Keep it private.
-3. Set the three Twilio Verify values in `api/.env` to enable SMS setup and password reset. Configure SMS delivery for your region in the Twilio console. [Twilio Verify setup](https://www.twilio.com/docs/verify/quickstarts/node-express)
+1. Complete Step 2. Set `APP_ORIGIN` in `backend/.env` to the exact browser origin (for example `http://localhost:5173` in Vite development or `http://localhost:4000` when Express serves the built site locally).
+2. Generate a random secret with the command below and put the result in `AUTH_SECRET` in `backend/.env`. Keep it private.
+3. Set the three Twilio Verify values in `backend/.env` to enable SMS setup and password reset. Configure SMS delivery for your region in the Twilio console. [Twilio Verify setup](https://www.twilio.com/docs/verify/quickstarts/node-express)
 4. Sign in at `/admin/login` with the demo admin phone and the password used for the seed. Invite a real test number using **Invite a member**. The invited member opens `/member/setup` to request or enter the code and choose a password. Everyday sign-in is at `/member/login`.
 5. Use `/member/reset` for member recovery. Saving a new password revokes existing sessions. Admins use separate sign-in and should be provisioned by an operator.
 
