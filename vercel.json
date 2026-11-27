@@ -2,11 +2,5 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "framework": "express",
   "buildCommand": "npm run build:vercel",
-  "rewrites": [
-    { "source": "/member/login", "destination": "/index.html" },
-    { "source": "/admin/login", "destination": "/index.html" },
-    { "source": "/member/setup", "destination": "/index.html" },
-    { "source": "/member/reset", "destination": "/index.html" }
-  ],
   "crons": [{ "path": "/api/cron/reminders", "schedule": "30 3 * * *" }]
 }
