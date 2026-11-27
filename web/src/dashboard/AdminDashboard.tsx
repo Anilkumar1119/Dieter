@@ -197,11 +197,14 @@ export default function AdminDashboard({ onLogout, loggingOut, error: signOutErr
                   <button type="button" className="underline decoration-slate-400" onClick={() => sortBy(sort)}>{label}</button>
                 </th>))}
               <th scope="col" className={cell}>Plan</th><th scope="col" className={cell}>Sign-in status</th>
+              <th scope="col" className={cell}>Actions</th>
             </tr></thead>
             <tbody>{members.data.records.map((row) => <tr key={row.id} className="border-b border-slate-100">
               <td className={cell}><button type="button" className="font-medium text-emerald-900 underline" onClick={() => openMember(row.id)}>{row.fullName}</button></td>
               <td className={cell}>{row.user.phone}</td><td className={cell}>{dateLabel(row.admissionDate)}</td>
               <td className={cell}>{row.membership?.currentPlan.name ?? 'Unassigned'}</td><td className={cell}><Status>{accountStatus(row)}</Status></td>
+              <td className={cell}><button type="button" className={secondary} disabled={busy}
+                aria-label={'Edit ' + row.fullName} onClick={() => openMember(row.id)}>Edit member</button></td>
             </tr>)}</tbody>
           </table></div> : <p className="mt-3 text-slate-700">No members match your search.</p>}
           <div className="mt-4 flex flex-wrap items-center justify-between gap-2">
@@ -215,7 +218,7 @@ export default function AdminDashboard({ onLogout, loggingOut, error: signOutErr
       </section>
       {management && <section className={panel} aria-label={management === 'add' ? 'Add member' : 'Member details'}>
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <h2 className="text-xl font-semibold">{management === 'add' ? 'Add member' : profile?.fullName ?? 'Member details'}</h2>
+          <h2 className="text-xl font-semibold">{management === 'add' ? 'Add member' : profile ? 'Edit member — ' + profile.fullName : 'Edit member'}</h2>
           <button type="button" className={secondary} disabled={busy} onClick={() => setManagement(null)}>Close</button>
         </div>
         <Feedback error={record.error || plans.error} loading={record.loading || plans.loading} />
@@ -233,7 +236,9 @@ export default function AdminDashboard({ onLogout, loggingOut, error: signOutErr
               <option value="">Select a fee plan</option>{selectablePlans.map((plan) => <option key={plan.id} value={plan.id}>{plan.name} · {inr(plan.amountPaise)}</option>)}
             </select></label>
             {!selectablePlans.length && <p className="sm:col-span-2">Create an active fee plan before adding a member.</p>}
-            <div className="sm:col-span-2"><button type="submit" className={primary} disabled={busy || !selectablePlans.length}>Save member</button></div>
+            <div className="sm:col-span-2"><button type="submit" className={primary} disabled={busy || !selectablePlans.length}>
+              {management === 'add' ? 'Add member' : 'Save changes'}
+            </button></div>
           </form>
         </>}
         {profile && <div className="mt-5 flex flex-wrap gap-2 border-t border-slate-200 pt-4">
